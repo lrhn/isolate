@@ -23,11 +23,6 @@ import 'src/util.dart';
 /// Executing a [run] function should not *synchronously*
 /// call methods on the load balancer.
 class LoadBalancer implements Runner {
-  /// A stand-in future which can be used as a default value.
-  ///
-  /// The future never completes, so it should not be exposed to users.
-  static final _defaultFuture = Completer<Never>().future;
-
   /// Reusable empty fixed-length list.
   static final _emptyQueue = List<_LoadBalancerEntry>.empty(growable: false);
 
@@ -93,17 +88,17 @@ class LoadBalancer implements Runner {
         .toList(growable: false);
   }
 
-  /// Execute the command in the currently least loaded isolate.
+  /// Execute the command in the currently least loaded runners.
   ///
   /// The optional [load] parameter represents the load that the command
-  /// is causing on the isolate where it runs.
+  /// is causing on the runner where it runs.
   /// The number has no fixed meaning, but should be seen as relative to
   /// other commands run in the same load balancer.
   /// The `load` must not be negative.
   ///
   /// If [timeout] and [onTimeout] are provided, they are forwarded to
   /// the runner running the function, which will handle a timeout
-  /// as normal. If the runners are running in other isolates, then
+  /// as normal. If the runners are running in other runners, then
   /// the [onTimeout] function must be a constant function.
   @override
   Future<R> run<R, P>(FutureOr<R> Function(P argument) function, P argument,
@@ -123,13 +118,13 @@ class LoadBalancer implements Runner {
     return entry.run(this, load, function, argument, timeout, onTimeout);
   }
 
-  /// Execute the same function in the least loaded [count] isolates.
+  /// Executes the same function in the least loaded [count] runners.
   ///
-  /// This guarantees that the function isn't run twice in the same isolate,
+  /// Guarantees that the function isn't run twice in the same runner,
   /// so `count` is not allowed to exceed [length].
   ///
   /// The optional [load] parameter represents the load that the command
-  /// is causing on the isolate where it runs.
+  /// is causing on the runner where it runs.
   /// The number has no fixed meaning, but should be seen as relative to
   /// other commands run in the same load balancer.
   /// The `load` must not be negative.
@@ -148,32 +143,28 @@ class LoadBalancer implements Runner {
           run(function, argument,
               load: load, timeout: timeout, onTimeout: onTimeout));
     }
-    var result = List<Future<R>>.filled(count, _defaultFuture);
     if (count == _length) {
-      // No need to change the order of entries in the queue.
-      for (var i = 0; i < _length; i++) {
+      return List.generate(count, growable: false, (int i) {
         var entry = _queue[i];
         entry.load += load;
-        result[i] =
-            entry.run(this, load, function, argument, timeout, onTimeout);
-      }
-    } else {
-      // Remove the [count] least loaded services and run the
-      // command on each, then add them back to the queue.
-      for (var i = 0; i < count; i++) {
-        _removeFirst();
-      }
-      // The removed entries are stored in `_queue` in positions from
-      // `_length` to `_length + count - 1`.
-      for (var i = 0; i < count; i++) {
-        var entry = _queue[_length];
-        entry.load += load;
-        _addNext();
-        result[i] =
-            entry.run(this, load, function, argument, timeout, onTimeout);
-      }
+        return entry.run(this, load, function, argument, timeout, onTimeout);
+      });
     }
-    return result;
+    // Removes the [count] least loaded services and runs the
+    // command on each, then adds them back to the queue.
+    // (This avoids running the same task more than once on a significantly
+    // lower-loaded service, which a repeated remote+run+add could do.)
+    for (var i = 0; i < count; i++) {
+      _removeFirst();
+    }
+    // The removed entries are stored in `_queue` in positions from
+    // `_length` to `_length + count - 1`.
+    return List.generate(count, growable: false, (void _) {
+      var entry = _queue[_length];
+      entry.load += load;
+      _addNext();
+      return entry.run(this, load, function, argument, timeout, onTimeout);
+    });
   }
 
   @override
@@ -290,7 +281,7 @@ class _LoadBalancerEntry implements Comparable<_LoadBalancerEntry> {
   /// Only needed for [LoadBalancer._decreaseLoad].
   int queueIndex;
 
-  // The current load on the isolate.
+  // The current load on the runner.
   int load = 0;
 
   // The service used to execute commands.
